@@ -1,6 +1,5 @@
 import os
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Iterator
 
 import numpy as np
@@ -124,7 +123,7 @@ class ImageWriter:
     def save_batch(
         cls,
         images: Any,
-        output_path: Path,
+        output_path: str,
         filename_base: str,
         extension: str
     ) -> list[str]:
@@ -144,7 +143,7 @@ class ImageWriter:
                 else f"{filename_base}.{extension}"
             )
             
-            file_path = output_path / filename
+            file_path = os.path.join(output_path, filename)
             img.save(file_path, **config)
             saved_files.append(filename)
         
@@ -155,7 +154,7 @@ class BatchImageSaver:
     """ComfyUI node for saving batches of images with flexible naming."""
     
     def __init__(self):
-        self.output_dir = Path(folder_paths.output_directory)
+        self.output_dir = folder_paths.output_directory
         self._save_counter = 0
         self._template_formatter = FormatTemplate()
         self._time_format = "%Y-%m-%d-%H%M%S"
@@ -180,15 +179,7 @@ class BatchImageSaver:
     OUTPUT_NODE = True
     CATEGORY = "ImageSaverTools"
     
-    def save_images(
-        self,
-        images: Any,
-        filename: str,
-        path: str,
-        extension: str,
-        prompt: dict | None = None,
-        extra_pnginfo: dict | None = None
-    ) -> dict[str, Any]:
+    def save_images(self, images, filename, path, extension, prompt=None, extra_pnginfo=None):
         """Save images with formatted filenames and paths."""
         self._save_counter += 1
         
@@ -205,8 +196,11 @@ class BatchImageSaver:
         )
         
         # Prepare output directory
-        output_path = self.output_dir / relative_path if relative_path.strip() else self.output_dir
-        output_path.mkdir(parents=True, exist_ok=True)
+        output_path = os.path.join(self.output_dir, relative_path)
+        if output_path.strip() != "":
+            os.makedirs(output_path, exist_ok=True)
+        else:
+            output_path = self.output_dir
         
         # Write images
         saved_files = ImageWriter.save_batch(
@@ -214,7 +208,7 @@ class BatchImageSaver:
         )
         
         # Prepare UI response
-        subfolder = str(Path(relative_path).as_posix()) if relative_path.strip() else ""
+        subfolder = os.path.normpath(relative_path)
         if subfolder == ".":
             subfolder = ""
         
@@ -228,7 +222,6 @@ class BatchImageSaver:
         }
 
 
-# IMPORTANTE: El nombre de la clave debe coincidir exactamente con el tipo de nodo esperado
 NODE_CLASS_MAPPINGS = {
     "Batch Image Save": BatchImageSaver,
 }
