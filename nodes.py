@@ -151,5 +151,5 @@ class BatchImageSaver:
 
 
 NODE_CLASS_MAPPINGS = {
-    "Save Image Batch": BatchImageSaver,
+    "Batch Image Save": BatchImageSaver,
 }
