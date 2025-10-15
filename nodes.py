@@ -2,7 +2,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
-from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
@@ -10,16 +9,8 @@ from PIL import Image
 import folder_paths
 
 
-@dataclass(frozen=True)
-class ImageMetadata:
-    """Inmutable metadata container for image generation."""
-    model: str
-    seed: str
-    counter: int
-
-
 class FormatTemplate:
-    """Handles template string formatting with proper caching."""
+    """Handles template string formatting with caching."""
     
     TIMESTAMP_CACHE_TTL = 1  # seconds
     
@@ -49,7 +40,7 @@ class FormatTemplate:
         self._timestamp_cache[fmt] = (formatted, current_time)
         return formatted
     
-    def format_template(self, template: str, metadata: ImageMetadata, time_format: str) -> str:
+    def format_template(self, template: str, metadata: dict[str, Any], time_format: str) -> str:
         """Format template string with metadata values."""
         if not template:
             return self.get_timestamp(time_format)
@@ -57,9 +48,9 @@ class FormatTemplate:
         replacements = {
             "%date": self.get_timestamp("%Y-%m-%d"),
             "%time": self.get_timestamp(time_format),
-            "%model": self.normalize_text(metadata.model),
-            "%seed": self.normalize_text(metadata.seed),
-            "%counter": str(metadata.counter),
+            "%model": self.normalize_text(str(metadata.get("model", "unknown"))),
+            "%seed": self.normalize_text(str(metadata.get("seed", "unknown"))),
+            "%counter": str(metadata.get("counter", 0)),
         }
         
         result = template
@@ -72,7 +63,6 @@ class FormatTemplate:
 class MetadataExtractor:
     """Extracts metadata from nested dictionaries."""
     
-    # Common keys for each metadata type
     MODEL_KEYS = frozenset({"model", "model_name", "ckpt_name"})
     SEED_KEYS = frozenset({"seed"})
     
@@ -90,35 +80,34 @@ class MetadataExtractor:
     @classmethod
     def extract_value(cls, data: Any, keys: frozenset[str]) -> Any | None:
         """Extract first matching value from nested structure."""
+        if data is None:
+            return None
         for key, value in cls.flatten_dict(data):
             if key in keys:
                 return value
         return None
     
     @classmethod
-    def extract_metadata(cls, extra_pnginfo: dict | None, prompt: dict | None) -> ImageMetadata:
+    def extract_metadata(cls, extra_pnginfo: dict | None, prompt: dict | None) -> dict[str, Any]:
         """Extract and compile metadata from available sources."""
-        # Try extra_pnginfo first, fallback to prompt
-        model = cls.extract_value(extra_pnginfo, cls.MODEL_KEYS) if extra_pnginfo else None
-        if model is None and prompt:
+        model = cls.extract_value(extra_pnginfo, cls.MODEL_KEYS)
+        if model is None:
             model = cls.extract_value(prompt, cls.MODEL_KEYS)
         
-        seed = cls.extract_value(extra_pnginfo, cls.SEED_KEYS) if extra_pnginfo else None
-        if seed is None and prompt:
+        seed = cls.extract_value(extra_pnginfo, cls.SEED_KEYS)
+        if seed is None:
             seed = cls.extract_value(prompt, cls.SEED_KEYS)
         
-        # Use counter placeholder; will be set by saver
-        return ImageMetadata(
-            model=str(model) if model is not None else "unknown",
-            seed=str(seed) if seed is not None else "unknown",
-            counter=0  # Will be replaced
-        )
+        return {
+            "model": str(model) if model is not None else "unknown",
+            "seed": str(seed) if seed is not None else "unknown",
+            "counter": 0
+        }
 
 
 class ImageWriter:
     """Handles the actual file writing operations."""
     
-    # Image format configurations
     SAVE_CONFIGS = {
         "png": {"compress_level": 4, "optimize": True},
         "jpeg": {"quality": 95, "optimize": True},
@@ -203,13 +192,9 @@ class BatchImageSaver:
         """Save images with formatted filenames and paths."""
         self._save_counter += 1
         
-        # Extract metadata
-        base_metadata = MetadataExtractor.extract_metadata(extra_pnginfo, prompt)
-        metadata = ImageMetadata(
-            model=base_metadata.model,
-            seed=base_metadata.seed,
-            counter=self._save_counter
-        )
+        # Extract and update metadata
+        metadata = MetadataExtractor.extract_metadata(extra_pnginfo, prompt)
+        metadata["counter"] = self._save_counter
         
         # Format paths
         filename_base = self._template_formatter.format_template(
@@ -243,6 +228,11 @@ class BatchImageSaver:
         }
 
 
+# IMPORTANTE: El nombre de la clave debe coincidir exactamente con el tipo de nodo esperado
 NODE_CLASS_MAPPINGS = {
     "Batch Image Save": BatchImageSaver,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Batch Image Save": "Batch Image Save"
 }
