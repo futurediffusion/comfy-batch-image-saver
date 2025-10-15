@@ -1,27 +1,31 @@
-# Save image with generation metadata on ComfyUI
+# ComfyUI Batch Image Saver
 
-All the tools you need to save images with their **generation metadata** on ComfyUI. Compatible with *Civitai* & *Prompthero* geninfo auto-detection. Works with `png`, `jpeg` and `webp`.
+Custom node for ComfyUI that focuses on saving image batches quickly without embedding any metadata. The node keeps only the inputs required to define where and how files are written: output path, filename pattern and file extension.
 
-You can find the example workflow file named `example-workflow.json`.
+## Features
 
-![example-workflow](https://github.com/giriss/comfy-image-saver/assets/2811408/e231237b-f91a-4679-b3ae-2618080c8e39)
+- Saves every image in the incoming batch to the selected output directory.
+- Supports `png`, `jpeg` and `webp` formats without adding EXIF or PNG chunks.
+- Filename and subfolder can be customised with automatic tokens.
 
-## How to install?
+## Automatic tokens
 
-### Method 1: Easiest (Recommended)
-If you have *ComfyUI-Manager*, you can simply search "**Save Image with Generation Metadata**" and install these custom nodes 🎉
+You can combine any of the following tokens inside the **Path** or **Filename** fields:
 
+| Token | Description |
+| ----- | ----------- |
+| `%time` | Current timestamp using `%Y-%m-%d-%H%M%S`. |
+| `%date` | Current date using `%Y-%m-%d`. |
+| `%seed` | First seed value found in the workflow metadata. Falls back to `unknown` if unavailable. |
+| `%model` | First model or checkpoint name found in the workflow metadata. Falls back to `unknown` if unavailable. |
+| `%counter` | Incremental counter that increases each time the node runs. |
 
-### Method 2: Easy
-If you don't have *ComfyUI-Manager*, then:
-- Using CLI, go to the ComfyUI folder
-- `cd custom_nodes`
-- `git clone git@github.com:giriss/comfy-image-saver.git`
-- `cd comfy-image-saver`
-- `pip install -r requirements.txt`
-- Start/restart ComfyUI 🎉
+Example: `outputs/%date/session_%counter` combined with `sample_%time_%seed` produces a directory structure similar to `outputs/2024-04-20/session_3/sample_2024-04-20-153010_12345.png`.
 
-## Autodetection in action
+## Installation
 
-![Screenshot 2023-08-17 at 13 15 18](https://github.com/giriss/comfy-image-saver/assets/2811408/785f2475-8f9a-45c9-9d38-855161a98495)
+1. Go to the `custom_nodes` directory of your ComfyUI installation.
+2. Clone this repository: `git clone https://github.com/giriss/comfy-image-saver.git`
+3. Restart ComfyUI.
 
+No additional Python dependencies are required.
