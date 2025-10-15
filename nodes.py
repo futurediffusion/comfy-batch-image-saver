@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import Any, Iterator
+from typing import Any, Iterable
 
 import numpy as np
 from PIL import Image
@@ -8,157 +8,55 @@ from PIL import Image
 import folder_paths
 
 
-class FormatTemplate:
-    """Handles template string formatting with caching."""
-    
-    TIMESTAMP_CACHE_TTL = 1  # seconds
-    
-    def __init__(self):
-        self._timestamp_cache: dict[str, tuple[str, float]] = {}
-    
-    @staticmethod
-    def normalize_text(text: str) -> str:
-        """Normalize whitespace in text strings."""
-        return " ".join(text.split())
-    
-    def get_timestamp(self, fmt: str) -> str:
-        """Get timestamp with caching to avoid repeated datetime calls."""
-        now = datetime.now()
-        current_time = now.timestamp()
-        
-        if fmt in self._timestamp_cache:
-            cached_value, cached_time = self._timestamp_cache[fmt]
-            if current_time - cached_time < self.TIMESTAMP_CACHE_TTL:
-                return cached_value
-        
-        try:
-            formatted = now.strftime(fmt)
-        except (ValueError, TypeError):
-            formatted = now.strftime("%Y-%m-%d-%H%M%S")
-        
-        self._timestamp_cache[fmt] = (formatted, current_time)
-        return formatted
-    
-    def format_template(self, template: str, metadata: dict[str, Any], time_format: str) -> str:
-        """Format template string with metadata values."""
-        if not template:
-            return self.get_timestamp(time_format)
-        
-        replacements = {
-            "%date": self.get_timestamp("%Y-%m-%d"),
-            "%time": self.get_timestamp(time_format),
-            "%model": self.normalize_text(str(metadata.get("model", "unknown"))),
-            "%seed": self.normalize_text(str(metadata.get("seed", "unknown"))),
-            "%counter": str(metadata.get("counter", 0)),
-        }
-        
-        result = template
-        for key, value in replacements.items():
-            result = result.replace(key, value)
-        
-        return result
+def _handle_whitespace(text: str) -> str:
+    return text.strip().replace("\n", " ").replace("\r", " ").replace("\t", " ")
 
 
-class MetadataExtractor:
-    """Extracts metadata from nested dictionaries."""
-    
-    MODEL_KEYS = frozenset({"model", "model_name", "ckpt_name"})
-    SEED_KEYS = frozenset({"seed"})
-    
-    @staticmethod
-    def flatten_dict(data: Any) -> Iterator[tuple[str, Any]]:
-        """Recursively flatten nested dictionaries and lists."""
-        if isinstance(data, dict):
-            for key, value in data.items():
-                yield key, value
-                yield from MetadataExtractor.flatten_dict(value)
-        elif isinstance(data, (list, tuple)):
-            for item in data:
-                yield from MetadataExtractor.flatten_dict(item)
-    
-    @classmethod
-    def extract_value(cls, data: Any, keys: frozenset[str]) -> Any | None:
-        """Extract first matching value from nested structure."""
-        if data is None:
-            return None
-        for key, value in cls.flatten_dict(data):
-            if key in keys:
-                return value
-        return None
-    
-    @classmethod
-    def extract_metadata(cls, extra_pnginfo: dict | None, prompt: dict | None) -> dict[str, Any]:
-        """Extract and compile metadata from available sources."""
-        model = cls.extract_value(extra_pnginfo, cls.MODEL_KEYS)
-        if model is None:
-            model = cls.extract_value(prompt, cls.MODEL_KEYS)
-        
-        seed = cls.extract_value(extra_pnginfo, cls.SEED_KEYS)
-        if seed is None:
-            seed = cls.extract_value(prompt, cls.SEED_KEYS)
-        
-        return {
-            "model": str(model) if model is not None else "unknown",
-            "seed": str(seed) if seed is not None else "unknown",
-            "counter": 0
-        }
+def _get_timestamp(time_format: str) -> str:
+    now = datetime.now()
+    try:
+        return now.strftime(time_format)
+    except Exception:
+        return now.strftime("%Y-%m-%d-%H%M%S")
 
 
-class ImageWriter:
-    """Handles the actual file writing operations."""
-    
-    SAVE_CONFIGS = {
-        "png": {"compress_level": 4, "optimize": True},
-        "jpeg": {"quality": 95, "optimize": True},
-        "webp": {"quality": 95, "optimize": True, "method": 6},
-    }
-    
-    @staticmethod
-    def tensor_to_pil(tensor: Any) -> Image.Image:
-        """Convert tensor to PIL Image efficiently."""
-        array = (tensor.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
-        return Image.fromarray(array)
-    
-    @classmethod
-    def save_batch(
-        cls,
-        images: Any,
-        output_path: str,
-        filename_base: str,
-        extension: str
-    ) -> list[str]:
-        """Save batch of images to disk."""
-        saved_files = []
-        batch_size = images.size(0)
-        use_index = batch_size > 1
-        
-        config = cls.SAVE_CONFIGS.get(extension, {"optimize": True})
-        
-        for idx, tensor in enumerate(images):
-            img = cls.tensor_to_pil(tensor)
-            
-            filename = (
-                f"{filename_base}_{idx + 1:02d}.{extension}"
-                if use_index
-                else f"{filename_base}.{extension}"
-            )
-            
-            file_path = os.path.join(output_path, filename)
-            img.save(file_path, **config)
-            saved_files.append(filename)
-        
-        return saved_files
+def _make_pathname(template: str, values: dict[str, Any], time_format: str) -> str:
+    path = template
+    path = path.replace("%date", _get_timestamp("%Y-%m-%d"))
+    path = path.replace("%time", _get_timestamp(time_format))
+    path = path.replace("%model", _handle_whitespace(str(values.get("model", "unknown"))))
+    path = path.replace("%seed", _handle_whitespace(str(values.get("seed", "unknown"))))
+    path = path.replace("%counter", _handle_whitespace(str(values.get("counter", 0))))
+    return path
+
+
+def _make_filename(template: str, values: dict[str, Any], time_format: str) -> str:
+    filename = _make_pathname(template, values, time_format)
+    return _get_timestamp(time_format) if filename == "" else filename
+
+
+def _flatten_dict_items(data: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            yield key, value
+            yield from _flatten_dict_items(value)
+    elif isinstance(data, (list, tuple)):
+        for item in data:
+            yield from _flatten_dict_items(item)
+
+
+def _extract_first_value(data: Any, target_keys: set[str]) -> Any | None:
+    for key, value in _flatten_dict_items(data):
+        if key in target_keys:
+            return value
+    return None
 
 
 class BatchImageSaver:
-    """ComfyUI node for saving batches of images with flexible naming."""
-    
     def __init__(self):
         self.output_dir = folder_paths.output_directory
         self._save_counter = 0
-        self._template_formatter = FormatTemplate()
-        self._time_format = "%Y-%m-%d-%H%M%S"
-    
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -173,45 +71,46 @@ class BatchImageSaver:
                 "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
-    
+
     RETURN_TYPES = ()
     FUNCTION = "save_images"
     OUTPUT_NODE = True
     CATEGORY = "ImageSaverTools"
-    
+
     def save_images(self, images, filename, path, extension, prompt=None, extra_pnginfo=None):
-        """Save images with formatted filenames and paths."""
         self._save_counter += 1
-        
-        # Extract and update metadata
-        metadata = MetadataExtractor.extract_metadata(extra_pnginfo, prompt)
-        metadata["counter"] = self._save_counter
-        
-        # Format paths
-        filename_base = self._template_formatter.format_template(
-            filename, metadata, self._time_format
-        )
-        relative_path = self._template_formatter.format_template(
-            path, metadata, self._time_format
-        )
-        
-        # Prepare output directory
+
+        metadata_source = extra_pnginfo if extra_pnginfo is not None else {}
+        model = _extract_first_value(metadata_source, {"model", "model_name", "ckpt_name"})
+        if model is None and prompt is not None:
+            model = _extract_first_value(prompt, {"model", "ckpt_name"})
+
+        seed = _extract_first_value(metadata_source, {"seed"})
+        if seed is None and prompt is not None:
+            seed = _extract_first_value(prompt, {"seed"})
+
+        values = {
+            "model": model if model is not None else "unknown",
+            "seed": seed if seed is not None else "unknown",
+            "counter": self._save_counter,
+        }
+
+        time_format = "%Y-%m-%d-%H%M%S"
+        filename_base = _make_filename(filename, values, time_format)
+        relative_path = _make_pathname(path, values, time_format)
+
         output_path = os.path.join(self.output_dir, relative_path)
         if output_path.strip() != "":
             os.makedirs(output_path, exist_ok=True)
         else:
             output_path = self.output_dir
-        
-        # Write images
-        saved_files = ImageWriter.save_batch(
-            images, output_path, filename_base, extension.lower()
-        )
-        
-        # Prepare UI response
+
+        saved_files = self._write_images(images, output_path, filename_base, extension.lower())
+
         subfolder = os.path.normpath(relative_path)
         if subfolder == ".":
             subfolder = ""
-        
+
         return {
             "ui": {
                 "images": [
@@ -221,11 +120,36 @@ class BatchImageSaver:
             }
         }
 
+    def _write_images(self, images, output_path: str, filename_prefix: str, extension: str) -> list[str]:
+        paths: list[str] = []
+        batch_size = images.size()[0]
+
+        for index, image in enumerate(images):
+            array = 255.0 * image.cpu().numpy()
+            img = Image.fromarray(np.clip(array, 0, 255).astype(np.uint8))
+
+            if batch_size > 1:
+                current_prefix = f"{filename_prefix}_{index + 1:02d}"
+            else:
+                current_prefix = filename_prefix
+
+            filename = f"{current_prefix}.{extension}"
+            file_path = os.path.join(output_path, filename)
+
+            save_kwargs = {"optimize": True}
+            if extension == "png":
+                save_kwargs["compress_level"] = 4
+            elif extension == "jpeg":
+                save_kwargs["quality"] = 95
+            elif extension == "webp":
+                save_kwargs["quality"] = 95
+
+            img.save(file_path, **save_kwargs)
+            paths.append(filename)
+
+        return paths
+
 
 NODE_CLASS_MAPPINGS = {
-    "Batch Image Save": BatchImageSaver,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "Batch Image Save": "Batch Image Save"
+    "Save Image Batch": BatchImageSaver,
 }
