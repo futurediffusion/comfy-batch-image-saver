@@ -1,279 +1,155 @@
 import os
-import hashlib
 from datetime import datetime
-import json
-import piexif
-import piexif.helper
-from PIL import Image, ExifTags
-from PIL.PngImagePlugin import PngInfo
+from typing import Any, Iterable
+
 import numpy as np
+from PIL import Image
+
 import folder_paths
-import comfy.sd
-from nodes import MAX_RESOLUTION
 
 
-def parse_name(ckpt_name):
-    path = ckpt_name
-    filename = path.split("/")[-1]
-    filename = filename.split(".")[:-1]
-    filename = ".".join(filename)
-    return filename
+def _handle_whitespace(text: str) -> str:
+    return text.strip().replace("\n", " ").replace("\r", " ").replace("\t", " ")
 
 
-def calculate_sha256(file_path):
-    sha256_hash = hashlib.sha256()
-
-    with open(file_path, "rb") as f:
-        # Read the file in chunks to avoid loading the entire file into memory
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-
-    return sha256_hash.hexdigest()
-
-
-def handle_whitespace(string: str):
-    return string.strip().replace("\n", " ").replace("\r", " ").replace("\t", " ")
-
-
-def get_timestamp(time_format):
+def _get_timestamp(time_format: str) -> str:
     now = datetime.now()
     try:
-        timestamp = now.strftime(time_format)
-    except:
-        timestamp = now.strftime("%Y-%m-%d-%H%M%S")
-
-    return timestamp
+        return now.strftime(time_format)
+    except Exception:
+        return now.strftime("%Y-%m-%d-%H%M%S")
 
 
-def make_pathname(filename, seed, modelname, counter, time_format):
-    filename = filename.replace("%date", get_timestamp("%Y-%m-%d"))
-    filename = filename.replace("%time", get_timestamp(time_format))
-    filename = filename.replace("%model", modelname)
-    filename = filename.replace("%seed", str(seed))
-    filename = filename.replace("%counter", str(counter))
-    return filename
+def _make_pathname(template: str, values: dict[str, Any], time_format: str) -> str:
+    path = template
+    path = path.replace("%date", _get_timestamp("%Y-%m-%d"))
+    path = path.replace("%time", _get_timestamp(time_format))
+    path = path.replace("%model", _handle_whitespace(str(values.get("model", "unknown"))))
+    path = path.replace("%seed", _handle_whitespace(str(values.get("seed", "unknown"))))
+    path = path.replace("%counter", _handle_whitespace(str(values.get("counter", 0))))
+    return path
 
 
-def make_filename(filename, seed, modelname, counter, time_format):
-    filename = make_pathname(filename, seed, modelname, counter, time_format)
-
-    return get_timestamp(time_format) if filename == "" else filename
-
-
-class SeedGenerator:
-    RETURN_TYPES = ("INT",)
-    FUNCTION = "get_seed"
-    CATEGORY = "ImageSaverTools/utils"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff})}}
-
-    def get_seed(self, seed):
-        return (seed,)
+def _make_filename(template: str, values: dict[str, Any], time_format: str) -> str:
+    filename = _make_pathname(template, values, time_format)
+    return _get_timestamp(time_format) if filename == "" else filename
 
 
-class StringLiteral:
-    RETURN_TYPES = ("STRING",)
-    FUNCTION = "get_string"
-    CATEGORY = "ImageSaverTools/utils"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"string": ("STRING", {"default": "", "multiline": True})}}
-
-    def get_string(self, string):
-        return (string,)
+def _flatten_dict_items(data: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            yield key, value
+            yield from _flatten_dict_items(value)
+    elif isinstance(data, (list, tuple)):
+        for item in data:
+            yield from _flatten_dict_items(item)
 
 
-class SizeLiteral:
-    RETURN_TYPES = ("INT",)
-    FUNCTION = "get_int"
-    CATEGORY = "ImageSaverTools/utils"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"int": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 8})}}
-
-    def get_int(self, int):
-        return (int,)
+def _extract_first_value(data: Any, target_keys: set[str]) -> Any | None:
+    for key, value in _flatten_dict_items(data):
+        if key in target_keys:
+            return value
+    return None
 
 
-class IntLiteral:
-    RETURN_TYPES = ("INT",)
-    FUNCTION = "get_int"
-    CATEGORY = "ImageSaverTools/utils"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"int": ("INT", {"default": 0, "min": 0, "max": 1000000})}}
-
-    def get_int(self, int):
-        return (int,)
-
-
-class CfgLiteral:
-    RETURN_TYPES = ("FLOAT",)
-    FUNCTION = "get_float"
-    CATEGORY = "ImageSaverTools/utils"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"float": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0})}}
-
-    def get_float(self, float):
-        return (float,)
-
-
-class CheckpointSelector:
-    CATEGORY = 'ImageSaverTools/utils'
-    RETURN_TYPES = (folder_paths.get_filename_list("checkpoints"),)
-    RETURN_NAMES = ("ckpt_name",)
-    FUNCTION = "get_names"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"ckpt_name": (folder_paths.get_filename_list("checkpoints"), ),}}
-
-    def get_names(self, ckpt_name):
-        return (ckpt_name,)
-
-
-class SamplerSelector:
-    CATEGORY = 'ImageSaverTools/utils'
-    RETURN_TYPES = (comfy.samplers.KSampler.SAMPLERS,)
-    RETURN_NAMES = ("sampler_name",)
-    FUNCTION = "get_names"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"sampler_name": (comfy.samplers.KSampler.SAMPLERS,)}}
-
-    def get_names(self, sampler_name):
-        return (sampler_name,)
-
-
-class SchedulerSelector:
-    CATEGORY = 'ImageSaverTools/utils'
-    RETURN_TYPES = (comfy.samplers.KSampler.SCHEDULERS,)
-    RETURN_NAMES = ("scheduler",)
-    FUNCTION = "get_names"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"scheduler": (comfy.samplers.KSampler.SCHEDULERS,)}}
-
-    def get_names(self, scheduler):
-        return (scheduler,)
-
-
-class ImageSaveWithMetadata:
+class BatchImageSaver:
     def __init__(self):
         self.output_dir = folder_paths.output_directory
+        self._save_counter = 0
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE", ),
-                "filename": ("STRING", {"default": f'%time_%seed', "multiline": False}),
-                "path": ("STRING", {"default": '', "multiline": False}),
-                "extension": (['png', 'jpeg', 'webp'],),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
-                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
-                "modelname": (folder_paths.get_filename_list("checkpoints"),),
-                "sampler_name": (comfy.samplers.KSampler.SAMPLERS,),
-                "scheduler": (comfy.samplers.KSampler.SCHEDULERS,),
-            },
-            "optional": {
-                "positive": ("STRING", {"default": 'unknown', "multiline": True}),
-                "negative": ("STRING", {"default": 'unknown', "multiline": True}),
-                "seed_value": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 8}),
-                "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 8}),
-                "lossless_webp": ("BOOLEAN", {"default": True}),
-                "quality_jpeg_or_webp": ("INT", {"default": 100, "min": 1, "max": 100}),
-                "counter": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff }),
-                "time_format": ("STRING", {"default": "%Y-%m-%d-%H%M%S", "multiline": False}),
+                "images": ("IMAGE",),
+                "filename": ("STRING", {"default": "%time_%seed", "multiline": False}),
+                "path": ("STRING", {"default": "", "multiline": False}),
+                "extension": (["png", "jpeg", "webp"],),
             },
             "hidden": {
                 "prompt": "PROMPT",
-                "extra_pnginfo": "EXTRA_PNGINFO"
+                "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
 
     RETURN_TYPES = ()
-    FUNCTION = "save_files"
-
+    FUNCTION = "save_images"
     OUTPUT_NODE = True
-
     CATEGORY = "ImageSaverTools"
 
-    def save_files(self, images, seed_value, steps, cfg, sampler_name, scheduler, positive, negative, modelname, quality_jpeg_or_webp,
-                   lossless_webp, width, height, counter, filename, path, extension, time_format, prompt=None, extra_pnginfo=None):
-        filename = make_filename(filename, seed_value, modelname, counter, time_format)
-        path = make_pathname(path, seed_value, modelname, counter, time_format)
-        ckpt_path = folder_paths.get_full_path("checkpoints", modelname)
-        basemodelname = parse_name(modelname)
-        modelhash = calculate_sha256(ckpt_path)[:10]
-        comment = f"{handle_whitespace(positive)}\nNegative prompt: {handle_whitespace(negative)}\nSteps: {steps}, Sampler: {sampler_name}{f'_{scheduler}' if scheduler != 'normal' else ''}, CFG Scale: {cfg}, Seed: {seed_value}, Size: {width}x{height}, Model hash: {modelhash}, Model: {basemodelname}, Version: ComfyUI"
-        output_path = os.path.join(self.output_dir, path)
+    def save_images(self, images, filename, path, extension, prompt=None, extra_pnginfo=None):
+        self._save_counter += 1
 
-        if output_path.strip() != '':
-            if not os.path.exists(output_path.strip()):
-                print(f'The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
-                os.makedirs(output_path, exist_ok=True)    
+        metadata_source = extra_pnginfo if extra_pnginfo is not None else {}
+        model = _extract_first_value(metadata_source, {"model", "model_name", "ckpt_name"})
+        if model is None and prompt is not None:
+            model = _extract_first_value(prompt, {"model", "ckpt_name"})
 
-        filenames = self.save_images(images, output_path, filename, comment, extension, quality_jpeg_or_webp, lossless_webp, prompt, extra_pnginfo)
+        seed = _extract_first_value(metadata_source, {"seed"})
+        if seed is None and prompt is not None:
+            seed = _extract_first_value(prompt, {"seed"})
 
-        subfolder = os.path.normpath(path)
-        return {"ui": {"images": map(lambda filename: {"filename": filename, "subfolder": subfolder if subfolder != '.' else '', "type": 'output'}, filenames)}}
+        values = {
+            "model": model if model is not None else "unknown",
+            "seed": seed if seed is not None else "unknown",
+            "counter": self._save_counter,
+        }
 
-    def save_images(self, images, output_path, filename_prefix, comment, extension, quality_jpeg_or_webp, lossless_webp, prompt=None, extra_pnginfo=None) -> list[str]:
-        img_count = 1
-        paths = list()
-        for image in images:
-            i = 255. * image.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-            if images.size()[0] > 1:
-                filename_prefix += "_{:02d}".format(img_count)
+        time_format = "%Y-%m-%d-%H%M%S"
+        filename_base = _make_filename(filename, values, time_format)
+        relative_path = _make_pathname(path, values, time_format)
 
-            if extension == 'png':
-                metadata = PngInfo()
-                metadata.add_text("parameters", comment)
+        output_path = os.path.join(self.output_dir, relative_path)
+        if output_path.strip() != "":
+            os.makedirs(output_path, exist_ok=True)
+        else:
+            output_path = self.output_dir
 
-                if prompt is not None:
-                    metadata.add_text("prompt", json.dumps(prompt))
-                if extra_pnginfo is not None:
-                    for x in extra_pnginfo:
-                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+        saved_files = self._write_images(images, output_path, filename_base, extension.lower())
 
-                filename = f"{filename_prefix}.png"
-                img.save(os.path.join(output_path, filename), pnginfo=metadata, optimize=True)
+        subfolder = os.path.normpath(relative_path)
+        if subfolder == ".":
+            subfolder = ""
+
+        return {
+            "ui": {
+                "images": [
+                    {"filename": name, "subfolder": subfolder, "type": "output"}
+                    for name in saved_files
+                ]
+            }
+        }
+
+    def _write_images(self, images, output_path: str, filename_prefix: str, extension: str) -> list[str]:
+        paths: list[str] = []
+        batch_size = images.size()[0]
+
+        for index, image in enumerate(images):
+            array = 255.0 * image.cpu().numpy()
+            img = Image.fromarray(np.clip(array, 0, 255).astype(np.uint8))
+
+            if batch_size > 1:
+                current_prefix = f"{filename_prefix}_{index + 1:02d}"
             else:
-                filename = f"{filename_prefix}.{extension}"
-                file = os.path.join(output_path, filename)
-                img.save(file, optimize=True, quality=quality_jpeg_or_webp, lossless=lossless_webp)
-                exif_bytes = piexif.dump({
-                    "Exif": {
-                        piexif.ExifIFD.UserComment: piexif.helper.UserComment.dump(comment, encoding="unicode")
-                    },
-                })
-                piexif.insert(exif_bytes, file)
+                current_prefix = filename_prefix
 
+            filename = f"{current_prefix}.{extension}"
+            file_path = os.path.join(output_path, filename)
+
+            save_kwargs = {"optimize": True}
+            if extension == "png":
+                save_kwargs["compress_level"] = 4
+            elif extension == "jpeg":
+                save_kwargs["quality"] = 95
+            elif extension == "webp":
+                save_kwargs["quality"] = 95
+
+            img.save(file_path, **save_kwargs)
             paths.append(filename)
-            img_count += 1
+
         return paths
 
 
 NODE_CLASS_MAPPINGS = {
-    "Checkpoint Selector": CheckpointSelector,
-    "Save Image w/Metadata": ImageSaveWithMetadata,
-    "Sampler Selector": SamplerSelector,
-    "Scheduler Selector": SchedulerSelector,
-    "Seed Generator": SeedGenerator,
-    "String Literal": StringLiteral,
-    "Width/Height Literal": SizeLiteral,
-    "Cfg Literal": CfgLiteral,
-    "Int Literal": IntLiteral,
+    "Save Image Batch": BatchImageSaver,
 }
